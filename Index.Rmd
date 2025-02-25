@@ -1,0 +1,279 @@
+---
+title: "Bayesian Modeling of Edibility Definitions in Plants"
+output: html_document
+bibliography: bib/packages.bib
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(tidyverse)
+library(brms)
+library(bayesplot)
+# Automatically generate citations for R packages
+knitr::write_bib(c("brms", "bayesplot", "tidyverse", "HDInterval", "bookdown"), "bib/packages.bib")
+```
+
+# Introduction
+
+How many of the estimated 342,000 to 369,000 known vascular plant species are truly edible? Estimates vary wildly, with some suggesting fewer than 10,000 edible species, while others estimate as many as 30,000. This uncertainty reflects the complexity of defining edibility, influenced by cultural practices, biological factors, and processing requirements.
+
+This question mirrors a classic probability problem discussed by Douglas Hubbard in *How to Measure Anything*. Imagine a collection of urns, each containing a different mix of red and blue marbles. Without knowing the composition of any urn, how many marbles must you draw from one urn to estimate the proportion of red marbles within a certain confidence level? This analogy highlights the core of sampling uncertainty: how much data is needed before we can make reliable inferences about an entire population.
+
+In this study, we apply this logic to plant edibility. We aim to estimate the true proportion of edible plant species using Bayesian inference and random sampling. Our approach incorporates different definitions of edibility and considers cultural practices and processing requirements.
+
+
+This analysis tests the assumptions about plant edibility using three definitions:
+
+1. **Raw Edibility**: Whole plant edible raw (e.g., *Brassica oleracea*).
+2. **Partial Edibility**: Parts of the plant are edible (e.g., apples).
+3. **Processed Edibility**: Toxic unless processed (e.g., *Solanaceae* spp. or oak).
+
+We use a **Bayesian hierarchical model** to assess the likelihood of species being edible under these definitions, accounting for ethnobotanical evidence, toxicity, and processing requirements.
+
+# Methods
+
+## Defining Edibility Criteria
+
+Each species is assessed based on:
+
+- **Number of Ethnobotanical Reports**: Proxy for evidence strength.
+- **Toxicity Evidence**: Binary indicator (1 = toxic, 0 = non-toxic).
+- **Processing Requirement**: Categorical (raw, cooked, processed).
+- **Edibility Outcome**: Binary (1 = edible, 0 = non-edible).
+
+## Data Simulation and Sampling Strategy
+
+To estimate the proportion of edible plants, we simulate a dataset of 200 species and implement a Beta-Binomial Bayesian model. The true proportion of edible plants remains unknown but is inferred based on random samples.
+
+We also calculate the necessary sample size to estimate the proportion of edible species within a desired margin of error and confidence level.
+
+```{r simulate-data}
+# STEP 1: Simulate a dataset of plant species characteristics
+# We randomly assign properties to 200 species including:
+# - Edibility definitions (raw, partial, processed)
+# - Number of ethnobotanical reports
+# - Toxicity status
+# - Processing level required to make edible
+# - Whether the species is considered edible or not based on these factors
+set.seed(42)  # Set random seed for reproducibility, using 42 as a reference to Douglas Adams' The Hitchhiker's Guide to the Galaxy
+n_species <- 200
+
+data <- tibble(
+  species_id = 1:n_species,
+  definition = sample(c("Raw", "Partial", "Processed"), n_species, replace = TRUE),
+  ethnobotanical_reports = rpois(n_species, lambda = 3),
+  toxicity = rbinom(n_species, 1, 0.3),
+  processing_level = sample(c("None", "Cooked", "Processed"), n_species, replace = TRUE),
+  edibility = rbinom(n_species, 1, prob = 0.1 + 0.2 * (definition == "Raw") +
+                      0.3 * (definition == "Partial") - 0.1 * toxicity)
+)
+
+# Function to calculate required sample size
+desired_margin_error <- 0.05  # Set the desired margin of error (5%) for estimating the proportion of edible species
+confidence_level <- 0.95  # Set the confidence level (95%) for the estimation interval
+z_score <- qnorm(1 - (1 - confidence_level) / 2)  # Calculate the z-score corresponding to the desired confidence level
+
+required_sample_size <- ceiling((z_score^2 * 0.5 * 0.5) / (desired_margin_error^2))  # Calculate the minimum required sample size to achieve the desired margin of error
+
+required_sample_size  # Minimum sample size required for desired margin of error
+
+head(data)
+```
+
+
+## Bayesian Model Specification and Posterior Inference
+
+This analysis utilizes several R packages for modeling and visualization. Specifically, we employ `brms` for Bayesian modeling (@R-brms), `bayesplot` for diagnostic visualization (@R-bayesplot), `tidyverse` for data manipulation (@R-tidyverse), and `HDInterval` for computing highest density intervals (@R-HDInterval). These packages provide robust tools for implementing Bayesian hierarchical models and interpreting the resulting posterior distributions.
+
+We apply a Bayesian logistic regression model using `brms` and incorporate a Beta-Binomial model to estimate the proportion of edible species from our sample. The prior belief about the proportion of edible plants is modeled using a non-informative Beta(1,1) distribution.
+
+```{r fit-model}
+# STEP 2: Fit a Bayesian logistic regression model
+# This model estimates the probability of a species being edible based on key predictors.
+
+# Fit Bayesian logistic regression model using the brms package
+# The response variable 'edibility' is modeled as a function of:
+# - definition: the category of edibility (Raw, Partial, Processed)
+# - ethnobotanical_reports: number of reports indicating use
+# - toxicity: binary indicator (1 = toxic, 0 = non-toxic)
+# - processing_level: level of processing required to make edible
+# - Random effect for species_id to account for unobserved variability across species
+edibility_model <- brm(
+  edibility ~ definition + ethnobotanical_reports + toxicity + processing_level + (1 | species_id),
+  data = data,  # Data being modeled
+  family = bernoulli(),  # Logistic regression model for binary outcome
+  prior = c(
+    set_prior("normal(0, 1)", class = "b"),  # Weakly informative priors for coefficients
+    set_prior("normal(0, 5)", class = "Intercept")  # Prior for model intercept
+  ),
+  chains = 4,  # Number of Markov chains to run
+  cores = 4,  # Number of CPU cores to use for parallel computation
+  iter = 2000  # Total number of iterations per chain
+)
+
+# STEP 2.1: Perform Beta-Binomial estimation for the overall edibility proportion
+# Set prior values for the Beta distribution (uninformative prior)
+alpha_prior <- 1  # Prior count of 'successes' (edible species)
+beta_prior <- 1  # Prior count of 'failures' (non-edible species)
+
+# Calculate the total number of observed edible species and total species in the sample
+# This helps update our prior beliefs based on the observed data
+total_edible <- sum(data$edibility)  # Sum of edible species in the dataset
+total_species <- n_species  # Total number of species sampled
+
+# Update the posterior distribution parameters based on observed data
+# The posterior parameters are simply the prior values updated with the new data
+alpha_post <- alpha_prior + total_edible  # Update 'successes'
+beta_post <- beta_prior + total_species - total_edible  # Update 'failures'
+
+# STEP 2.2: Calculate the credible interval and mean estimate for the posterior
+# Using the HDInterval package to compute the 95% highest density interval (HDI)
+library(HDInterval)  # Load HDInterval library for credible interval calculation
+credible_interval <- hdi(rbeta(10000, alpha_post, beta_post), credMass = 0.95)  # Simulate draws from posterior
+
+# Display the mean estimate and credible interval for the proportion of edible species
+list(
+  mean_estimate = alpha_post / (alpha_post + beta_post),  # Mean estimate of the proportion of edible plants
+  credible_interval = credible_interval  # 95% credible interval around the mean estimate
+)
+```
+
+
+# Results
+
+## Estimating the Percentage of Edible Species
+
+To provide a meaningful estimate of the total number of edible plant species, we apply the posterior mean and credible intervals to the estimated range of known vascular plants (342,000 to 369,000 species). This approach reflects the inherent uncertainty in both the total number of species and the proportion that may be edible.
+
+
+
+## Estimating the Total Number and Percentage of Edible Species
+
+Before calculating the final percentage and total edible species, we need to apply the posterior mean and credible intervals to the estimated range of known vascular plants (342,000 to 369,000). This ensures that variables like `mean_proportion` and `credible_bounds` are correctly defined before use.
+
+```{r estimate-total-edible}
+# Calculate the expected number of edible species based on the posterior estimate
+lower_bound_species <- 342000  # Lower bound for total species count
+upper_bound_species <- 369000  # Upper bound for total species count
+
+# Calculate the expected mean proportion of edible species from posterior parameters
+mean_proportion <- alpha_post / (alpha_post + beta_post)
+credible_bounds <- credible_interval  # 95% credible interval from posterior
+
+# Compute expected edible species counts for both ends of the range
+expected_edible_lower <- mean_proportion * lower_bound_species
+expected_edible_upper <- mean_proportion * upper_bound_species
+
+# Compute credible intervals for the lower and upper bounds
+credible_lower_lower <- credible_bounds[1] * lower_bound_species
+credible_lower_upper <- credible_bounds[2] * lower_bound_species
+credible_upper_lower <- credible_bounds[1] * upper_bound_species
+credible_upper_upper <- credible_bounds[2] * upper_bound_species
+```
+
+
+To finalize the analysis, we calculate both the estimated percentage of edible species and the total number of edible vascular plants, using the range of total species (342,000 to 369,000). This provides a comprehensive view of how the proportion translates into absolute numbers across the plausible range of known species.
+
+```{r final-percentage-calc}
+# STEP 4: Calculate the overall percentage of edible species
+# This converts the proportion of edible species from the Bayesian model into a percentage.
+# We also calculate the 95% credible interval, which shows the range where we believe the true percentage likely falls.
+# Calculate overall percentages and total numbers
+mean_percentage <- mean_proportion * 100
+credible_percentage_lower <- credible_bounds[1] * 100
+credible_percentage_upper <- credible_bounds[2] * 100
+
+# Display the results
+list(
+  mean_percentage_edible = mean_percentage,
+  credible_interval_percentage = c(credible_percentage_lower, credible_percentage_upper),
+  total_edible_species_range = c(expected_edible_lower, expected_edible_upper),
+  credible_edible_species_lower = c(credible_lower_lower, credible_lower_upper),
+  credible_edible_species_upper = c(credible_upper_lower, credible_upper_upper)
+)
+```
+
+
+## Estimating the Percentage of Edible Species
+
+To provide a meaningful estimate of the total number of edible plant species, we apply the posterior mean and credible intervals to the estimated range of known vascular plants (342,000 to 369,000 species). This approach reflects the inherent uncertainty in both the total number of species and the proportion that may be edible.
+
+
+
+
+## Model Summary
+
+```{r model-summary}
+# STEP 5: Summarize the fitted Bayesian model
+# This output provides key information about the estimated effects of each factor on plant edibility.
+summary(edibility_model)
+```
+
+## Posterior Predictive Checks
+
+In the context of the `pp_check()` function from the `bayesplot` package, two key elements are compared:
+
+- **Observed Data (`y`)**: This represents the actual recorded data from the sample, where each value corresponds to whether a species is considered edible (1) or non-edible (0).
+
+- **Simulated Data (`yrep`)**: This consists of multiple datasets simulated from the posterior predictive distribution of the fitted model. These simulated datasets reflect what the model predicts the data should look like if it accurately represents the underlying data-generating process.
+
+In the generated plot:
+
+- The **x-axis** typically represents the outcome variable of interest, such as the proportion or count of edible species.
+- The **y-axis** shows the density or frequency of occurrences in the simulated datasets.
+
+If the observed data aligns well with the simulated predictions, the model can be considered a good fit. Significant deviations between the observed data and the simulated predictions suggest the model might not be capturing important relationships in the data.
+
+`pp_check` from the @R-bayesplot package generates a posterior predictive check plot. This diagnostic tool compares the observed data with data simulated from the posterior predictive distribution. It helps assess whether our Bayesian model adequately captures the patterns in the actual data.
+
+```{r posterior-checks}
+# STEP 6: Perform posterior predictive checks
+# This diagnostic assesses whether the Bayesian model adequately fits the data.
+pp_check(edibility_model)  # This generates a posterior predictive check plot.
+# The observed data is shown as a line or histogram, representing the actual distribution of edible species in your sample.
+# Simulated data from the model (posterior predictions) are overlaid as density plots or histograms.
+# If the observed data aligns well with the simulated predictions, this indicates the model fits the data well.
+# Significant deviations suggest the model might be missing important factors or relationships.
+```
+
+## Posterior Distributions
+
+Visualizing the effect of definitions and toxicity:
+
+```{r posterior-distributions}
+# STEP 7: Visualize posterior distributions
+# These plots show how edibility definitions and toxicity affect the probability of a plant being edible.
+plot(marginal_effects(edibility_model, effects = "definition"))
+plot(marginal_effects(edibility_model, effects = "toxicity"))
+```
+
+# Discussion
+
+This model allows for an assessment of plant edibility based on varying definitions and the impact of cultural evidence and toxicity. The results suggest differing probabilities of edibility across definitions and highlight the importance of processing and toxicity evidence.
+
+## Final Estimate of Edible Species
+
+The Bayesian analysis estimates that approximately:
+
+```{r display-final-results}
+# STEP 8: Display the final results 
+# This step outputs:
+# - The estimated percentage of edible species
+# - The credible interval for that percentage
+# - The estimated number of edible species across the full range of known vascular plants
+# Display final estimates clearly
+cat(sprintf("Estimated percentage of edible vascular plant species: %.2f%% (95%% CI: %.2f%% - %.2f%%)", 
+            mean_percentage, credible_percentage_lower, credible_percentage_upper))
+
+cat(sprintf(". Estimated total number of edible vascular plant species: %.0f to %.0f (95%% CI: %.0f - %.0f for 342,000 species; %.0f - %.0f for 369,000 species).",
+            expected_edible_lower, expected_edible_upper, 
+            credible_lower_lower, credible_lower_upper, 
+            credible_upper_lower, credible_upper_upper))
+```
+
+# Conclusion
+
+Using Bayesian hierarchical modeling, we can rigorously test how different definitions of edibility affect our understanding of the edible plant species pool, while incorporating uncertainty and prior evidence.
+
+# References
+
