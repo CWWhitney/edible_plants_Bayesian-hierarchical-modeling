@@ -21,7 +21,6 @@ This question mirrors a classic probability problem discussed by Douglas Hubbard
 
 In this study, we apply this logic to plant edibility. We aim to estimate the true proportion of edible plant species using Bayesian inference and random sampling. Our approach incorporates different definitions of edibility and considers cultural practices and processing requirements.
 
-
 This analysis tests the assumptions about plant edibility using three definitions:
 
 1. **Raw Edibility**: Whole plant edible raw (e.g., *Brassica oleracea*).
@@ -197,9 +196,6 @@ list(
 ## Estimating the Percentage of Edible Species
 
 To provide a meaningful estimate of the total number of edible plant species, we apply the posterior mean and credible intervals to the estimated range of known vascular plants (342,000 to 369,000 species). This approach reflects the inherent uncertainty in both the total number of species and the proportion that may be edible.
-
-
-
 
 ## Model Summary
 

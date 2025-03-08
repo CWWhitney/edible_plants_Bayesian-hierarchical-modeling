@@ -1,0 +1,154 @@
+---
+title: "World Edible Plants: Bayesian Assessment of Edibility"
+output: html_document
+bibliography: bib/packages.bib
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(tidyverse)
+library(brms)
+library(bayesplot)
+library(HDInterval)
+
+# Load the custom edibility classification function
+source("functions/check_edibility_wikipedia.R")
+
+# Load the dataset from the data folder
+species_data <- read.csv("data/randomsample200species_and_synonims.csv")
+```
+
+# Introduction
+
+This study aims to estimate the proportion of edible vascular plant species globally. While estimates vary from fewer than 7,000 to over 30,000 edible species, these numbers depend on definitions influenced by culture, toxicity, and available processing technologies.
+
+We follow a method proposed by [Colleague's Name], focusing on a randomly selected sample of 200 plant species to assess edibility.
+
+# Methods
+
+## Defining Edibility Criteria
+
+We categorize each species based on:
+
+- **Evidence Strength**:
+  - Number of independent ethnobotanical reports.
+  - Lack of toxicity evidence.
+- **Processing Requirements**:
+  - Edible raw (e.g., *Brassica oleracea*).
+  - Edible after cooking (e.g., apples).
+  - Edible after further processing (e.g., *Solanaceae* spp.).
+- **Quantity Consideration**:
+  - Differentiate between food additives and staples (e.g., spices like nutmeg).
+
+## Sample and Data Collection
+
+The dataset contains 200 species, including 619 synonyms. Assuming a 10% population proportion of edible species, this sample size offers a 95% confidence interval with a ±4.16% margin of error.
+
+### Literature Search Strategy
+
+- **Search Queries**:
+  - "species name" AND "food"
+  - "species name" AND "edible"
+- **Databases**:
+  - Wikipedia (automated extraction)
+  - Scopus (manual follow-up for unclassified species)
+  - Consensus API (automated search for scientific literature)
+
+```{r consensus-api-query}
+library(httr)
+library(jsonlite)
+
+# Define function to query the Consensus API for edibility information
+query_consensus <- function(species_name) {
+  api_url <- "https://api.consensus.app/v1/search"
+  api_key <- "YOUR_API_KEY"  # Replace with your actual API key
+  query <- paste0("\"", species_name, "\" AND (food OR edible OR nutrition)")
+
+  response <- tryCatch({
+    httr::POST(
+      api_url,
+      add_headers(Authorization = paste("Bearer", api_key)),
+      encode = "json",
+      body = list(query = query)
+    )
+  }, error = function(e) return(NULL))
+
+  if (is.null(response) || http_error(response)) {
+    return("unknown")
+  }
+
+  # Parse response
+  content <- content(response, as = "parsed", type = "application/json")
+  
+  if (length(content$results) == 0) {
+    return("unknown")
+  }
+  
+  # Extract relevant text
+  text_data <- tolower(paste(unlist(content$results), collapse = " "))
+  
+  # Define keywords for classification
+  edible_keywords <- c("edible", "consumed", "food", "eaten", "nutrition")
+  
+  if (any(str_detect(text_data, edible_keywords))) {
+    return("edible")
+  } else {
+    return("not_edible")
+  }
+}
+
+# Apply the function to the dataset
+species_data$consensus_edibility <- sapply(species_data$scientificName, query_consensus)
+
+# Save updated dataset
+write.csv(species_data, "data/updated_species_with_consensus.csv", row.names = FALSE)
+``````{r initialize-edibility-status}
+# Placeholder: Assume initial unknown edibility status
+species_data$edibility_status <- NA  # Will be updated after literature search
+
+# Display initial dataset
+head(species_data)
+```
+
+# Bayesian Modeling of Edibility
+
+## Bayesian Model Specification and Posterior Inference
+
+This analysis utilizes several R packages for modeling and visualization. Specifically, we employ `brms` for Bayesian modeling (@R-brms), `bayesplot` for diagnostic visualization (@R-bayesplot), `tidyverse` for data manipulation (@R-tidyverse), and `HDInterval` for computing highest density intervals (@R-HDInterval). These packages provide robust tools for implementing Bayesian hierarchical models and interpreting the resulting posterior distributions.
+
+## Model Specification
+
+We fit a Bayesian logistic regression model to estimate the proportion of edible species based on the available evidence.
+
+```{r bayesian-model}
+# Set non-informative priors
+alpha_prior <- 1
+beta_prior <- 1
+
+# Placeholder values assuming future search updates
+species_data$edibility <- ifelse(is.na(species_data$edibility_status), 0, 1)  # 1 for edible, 0 otherwise
+
+total_edible <- sum(species_data$edibility)
+total_species <- nrow(species_data)
+
+# Posterior update
+alpha_post <- alpha_prior + total_edible
+beta_post <- beta_prior + total_species - total_edible
+
+# Calculate credible intervals
+credible_interval <- hdi(rbeta(10000, alpha_post, beta_post), credMass = 0.95)
+
+list(
+  mean_estimate = alpha_post / (alpha_post + beta_post),
+  credible_interval = credible_interval
+)
+```
+
+# Posterior Predictive Check
+
+```{r posterior-predictive-check}
+# Diagnostic to assess model fit
+pp_check(brm(edibility ~ 1, data = species_data, family = bernoulli()))
+```
+
+# References
